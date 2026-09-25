@@ -33,8 +33,13 @@ def construir_lineas(palabras: list[Palabra]) -> list[Linea]:
             if p.x0 < grupo[-1].x0 - 0.3 * p.tamano:
                 continue
             hueco = p.x0 - ref.x1
-            limite = 0.9 * max(p.tamano, ref.tamano)
-            if hueco < -0.3 * max(p.tamano, ref.tamano) or hueco > limite:
+            menor, mayor = min(p.tamano, ref.tamano), max(p.tamano, ref.tamano)
+            if mayor > 1.8 * menor:
+                # Tamaños muy distintos: solo se unen las piezas de un precio (1 | 99 | €)
+                pequeno = p if p.tamano < ref.tamano else ref
+                if not (_CENTIMOS.match(pequeno.texto) or pequeno.texto in ("€", "€.")) or hueco > 0.25 * menor:
+                    continue
+            if hueco < -0.3 * mayor or hueco > 0.9 * menor:
                 continue
             solape = _solape_vertical(ref.y0, ref.y1, p.y0, p.y1)
             if solape > mejor_solape:
@@ -44,9 +49,21 @@ def construir_lineas(palabras: list[Palabra]) -> list[Linea]:
         else:
             mejor.append(p)
 
-    resultado = [_componer(g) for g in lineas]
+    resultado = [_componer(_ordenar_apilados(g)) for g in lineas]
     resultado.sort(key=lambda l: (round(l.y0 / 3), l.x0))
     return resultado
+
+
+def _ordenar_apilados(palabras: list[Palabra]) -> list[Palabra]:
+    """En «16 €/,99» el € va encima de los céntimos: se coloca detrás para leer «16,99€»."""
+    ps = list(palabras)
+    for i in range(len(ps) - 1):
+        a, b = ps[i], ps[i + 1]
+        if a.texto in ("€", "€.") and _CENTIMOS.match(b.texto):
+            solape = min(a.x1, b.x1) - max(a.x0, b.x0)
+            if solape > 0.4 * min(a.x1 - a.x0, b.x1 - b.x0):
+                ps[i], ps[i + 1] = b, a
+    return ps
 
 
 def _componer(palabras: list[Palabra]) -> Linea:

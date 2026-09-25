@@ -1,5 +1,6 @@
-"""Agrupación espacial: cada precio principal es el ancla de una oferta y el resto
-de textos y precios secundarios se asignan al ancla más cercana."""
+"""Agrupación espacial: cada precio principal (o sello de promoción sin precio, como un
+«3x2» suelto) es el ancla de una oferta; el resto de textos y precios secundarios se
+asignan al ancla más cercana."""
 from __future__ import annotations
 
 import re
@@ -8,6 +9,9 @@ import statistics
 from .modelos import Linea, Oferta, Precio
 
 _SOLO_PRECIO = re.compile(r"^[\s\d.,'’€/a-z%-]*$", re.IGNORECASE)
+# Sello de promoción que puede ser una oferta por sí mismo (sin precio)
+SELLO = re.compile(r"^\s*(?:[2-9]\s?[x×]\s?[1-8]|-\s?\d{1,2}\s?%?|[2-9]\s?ª?\s?(?:unidad|ud\.?)\s*(?:al\s*)?-?\s?\d{1,3}\s?%)\s*$",
+                   re.IGNORECASE)
 
 
 def _dentro(caja, r, margen=2.0) -> bool:
@@ -15,9 +19,10 @@ def _dentro(caja, r, margen=2.0) -> bool:
 
 
 def _separados(caja_texto, ancla: Precio, recuadros) -> bool:
-    """True si algún recuadro dibujado contiene a uno de los dos pero no al otro."""
+    """True si el texto está dentro de un recuadro dibujado (una celda) que no contiene al precio.
+    Un precio metido en su propia caja no aleja al texto que está fuera de ella."""
     for r in recuadros:
-        if _dentro(caja_texto, r) != _dentro(ancla.caja, r):
+        if _dentro(caja_texto, r) and not _dentro(ancla.caja, r):
             return True
     return False
 
@@ -40,12 +45,34 @@ def es_cabecera(linea: Linea, mediana: float) -> bool:
             and len(linea.texto.split()) <= 5 and not any(c.isdigit() for c in linea.texto))
 
 
+def _sellos_sueltos(lineas, principales, mediana, alto_pagina, cfg, recuadros) -> list[Precio]:
+    """Sellos grandes («3x2», «-50%») sin precio al lado: ofertas sin precio en el folleto."""
+    sellos: list[Precio] = []
+    for l in lineas:
+        if not SELLO.match(l.texto) or l.tamano < 1.5 * mediana or l.y1 < 0.08 * alto_pagina:
+            continue
+        pseudo = Precio(valor=None, texto=l.texto.strip(), caja=l.caja, tamano=l.tamano, pagina=0,
+                        con_euro=True, tipo="sello", motor=l.palabras[0].motor, linea=l, confianza="media")
+        if principales:
+            cerca = min(_distancia(l.caja, p, cfg) for p in principales)
+            if cerca <= 1.5 * l.tamano:
+                continue  # es el sello de una oferta con precio
+        if any(abs(s.caja.cx - l.caja.cx) < l.tamano and abs(s.caja.cy - l.caja.cy) < l.tamano for s in sellos):
+            continue  # sello duplicado (texto con contorno)
+        sellos.append(pseudo)
+    return sellos
+
+
 def agrupar(lineas: list[Linea], precios: list[Precio], pagina: int, cfg, siguiente_id: int,
-            recuadros=(), excluir=()):
+            recuadros=(), excluir=(), alto_pagina: float = 842.0):
     tamanos = [p.tamano for l in lineas for p in l.palabras] or [10.0]
     mediana = statistics.median(tamanos)
 
-    anclas = [p for p in precios if p.tipo == "principal"]
+    principales = [p for p in precios if p.tipo == "principal"]
+    sellos = _sellos_sueltos(lineas, principales, mediana, alto_pagina, cfg, recuadros)
+    for s in sellos:
+        s.pagina = pagina
+    anclas = principales + sellos
     anclas.sort(key=lambda p: (round(p.y0 / 5), p.x0))
     ofertas = []
     for i, a in enumerate(anclas):
@@ -54,12 +81,15 @@ def agrupar(lineas: list[Linea], precios: list[Precio], pagina: int, cfg, siguie
         ofertas.append(of)
 
     cabeceras = [l for l in lineas if es_cabecera(l, mediana)]
-    lineas_precio = {id(p.linea) for p in precios}
+    lineas_ancla = {id(a.linea): of for a, of in ((o.precio, o) for o in ofertas)}
     sin_asignar: list[Linea] = []
     huerfanos: list[Precio] = []
+    condiciones: list[Precio] = []
 
     if not ofertas:
-        return ofertas, [l for l in lineas if l not in cabeceras], [p for p in precios], cabeceras
+        resto = [p for p in precios if p.tipo != "condicion"]
+        return ofertas, [l for l in lineas if l not in cabeceras], resto, cabeceras, \
+            [p for p in precios if p.tipo == "condicion"]
 
     for linea in lineas:
         if linea in cabeceras:
@@ -67,11 +97,9 @@ def agrupar(lineas: list[Linea], precios: list[Precio], pagina: int, cfg, siguie
         if any(patron.search(linea.texto) for patron in excluir):
             sin_asignar.append(linea)
             continue
-        # Una línea que solo contiene el precio ancla ya está representada por él
-        if id(linea) in lineas_precio and _SOLO_PRECIO.match(linea.texto) and \
-                any(p.linea is linea and p.tipo == "principal" for p in precios):
-            of = next(o for o in ofertas if o.precio.linea is linea)
-            of.lineas.append(linea)
+        # La línea que contiene solo el ancla pertenece a su oferta
+        if id(linea) in lineas_ancla and (_SOLO_PRECIO.match(linea.texto) or SELLO.match(linea.texto)):
+            lineas_ancla[id(linea)].lineas.append(linea)
             continue
         caja = linea.caja
         mejor = min(ofertas, key=lambda o: _distancia(caja, o.precio, cfg, recuadros))
@@ -86,7 +114,9 @@ def agrupar(lineas: list[Linea], precios: list[Precio], pagina: int, cfg, siguie
             continue
         mejor = min(ofertas, key=lambda o: _distancia(p.caja, o.precio, cfg, recuadros))
         radio = max(cfg.radio_asociacion_minimo, cfg.radio_asociacion_factor * mejor.precio.tamano)
-        if _distancia(p.caja, mejor.precio, cfg, recuadros) <= radio:
+        if p.tipo == "condicion" or (p.linea and len(p.linea.texto) > 60 and p.tamano <= mediana):
+            condiciones.append(p)  # importes de bases legales, financiación, límites de cupón...
+        elif _distancia(p.caja, mejor.precio, cfg, recuadros) <= radio:
             mejor.secundarios.append(p)
             p.oferta_id = mejor.id
         else:
@@ -95,13 +125,14 @@ def agrupar(lineas: list[Linea], precios: list[Precio], pagina: int, cfg, siguie
     for of in ofertas:
         of.lineas.sort(key=lambda l: (round(l.y0 / 3), l.x0))
         of.seccion = _seccion(of, cabeceras)
-    return ofertas, sin_asignar, huerfanos, cabeceras
+    return ofertas, sin_asignar, huerfanos, cabeceras, condiciones
 
 
 def _seccion(of: Oferta, cabeceras: list[Linea]) -> str:
     candidatas = [c for c in cabeceras if c.y1 <= of.precio.y0]
     if not candidatas:
         return ""
+
     # la cabecera más cercana por encima que empieza a la izquierda del precio
     def clave(c):
         return (0 if c.x0 <= of.precio.caja.cx else 1, of.precio.y0 - c.y1)

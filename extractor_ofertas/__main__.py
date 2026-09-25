@@ -1,6 +1,8 @@
 """Uso:
-    python -m extractor_ofertas                 # vigila la carpeta entrada/
-    python -m extractor_ofertas procesar X.pdf  # procesa uno o varios PDFs sin moverlos
+    python -m extractor_ofertas mcp             # servidor MCP para Claude Desktop / ChatGPT Desktop
+    python -m extractor_ofertas mcp --http      # igual, por HTTP (túnel MCP de ChatGPT)
+    python -m extractor_ofertas procesar X.pdf  # borrador sin IA, por reglas
+    python -m extractor_ofertas vigilar         # borrador sin IA de cada PDF que llegue a entrada/
 """
 from __future__ import annotations
 
@@ -33,11 +35,19 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="extractor_ofertas", description="Extrae ofertas de folletos PDF a Excel.")
     ap.add_argument("--config", type=Path, help="Ruta a config.json")
     sub = ap.add_subparsers(dest="orden")
-    sub.add_parser("vigilar", help="Vigila la carpeta de entrada (por defecto)")
+    pm = sub.add_parser("mcp", help="Servidor MCP para Claude Desktop / ChatGPT Desktop")
+    pm.add_argument("--http", action="store_true", help="Transporte HTTP en lugar de stdio")
+    pm.add_argument("--puerto", type=int, default=8765)
+    sub.add_parser("vigilar", help="Borrador sin IA de cada PDF que llegue a entrada/")
     pp = sub.add_parser("procesar", help="Procesa PDFs concretos")
     pp.add_argument("pdfs", nargs="+", type=Path)
     pp.add_argument("--salida", type=Path, help="Carpeta de salida (por defecto la configurada)")
     args = ap.parse_args(argv)
+
+    if args.orden == "mcp":
+        from .servidor_mcp import main as servidor
+        servidor(http=args.http, puerto=args.puerto)  # sin log a stdout: es el canal MCP
+        return 0
 
     cfg = Config.cargar(args.config)
     _logging(cfg)

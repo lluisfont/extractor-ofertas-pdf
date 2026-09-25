@@ -1,7 +1,29 @@
 # Extractor de ofertas de folletos PDF
 
-Copia un folleto PDF en `entrada/` y en unos segundos tendrás en `salida/` un Excel
-con todas las ofertas extraídas y un informe de verificación de integridad.
+Convierte un folleto PDF de supermercado en un Excel con **todas** sus ofertas, usando
+**Claude Desktop** o **ChatGPT Desktop** para interpretar las páginas y el propio PDF para
+**verificar** cada precio. No necesita API key: usa la suscripción de tu app de escritorio.
+
+## Cómo funciona
+
+El proyecto es un **servidor MCP**. La app de escritorio lo conecta y su modelo usa estas herramientas:
+
+| Herramienta | Qué hace |
+|---|---|
+| `listar_folletos` | PDF de `entrada/` y su progreso (páginas pendientes / con avisos). |
+| `leer_pagina` | Imagen de la página + capa de texto con coordenadas + lista de precios detectados (P1, P2…). |
+| `guardar_pagina` | Recibe las ofertas de la página y **las verifica contra el PDF**. |
+| `estado_folleto` | Resumen del progreso. |
+| `generar_excel` | Crea el Excel en `salida/` y mueve el PDF a `procesados/`. |
+
+El modelo entiende la maquetación (qué texto va con qué oferta, sellos 3x2 sin precio, «Comprando 3,
+la unidad sale a»…). El servidor comprueba lo que devuelve:
+
+- **Nada inventado:** cada importe devuelto debe existir en el texto del PDF.
+- **Nada olvidado:** cada precio del PDF debe estar en una oferta o descartado con motivo
+  (textos legales, límites de cupón…). Si no, `guardar_pagina` devuelve la lista y el modelo corrige.
+- **Progreso guardado por página** (`salida/.sesiones/`): los folletos largos se pueden continuar en
+  otro chat.
 
 ## Instalación (Windows)
 
@@ -9,67 +31,52 @@ con todas las ofertas extraídas y un informe de verificación de integridad.
 pip install -r requirements.txt
 ```
 
-**OCR (opcional, para folletos escaneados o con precios en imagen):** instala
-[Tesseract para Windows](https://github.com/UB-Mannheim/tesseract/wiki) marcando el
-idioma *Spanish*. Se detecta solo en `C:\Program Files\Tesseract-OCR`. Sin Tesseract,
-las páginas que son imagen se marcan como **ERROR** en el Excel (no se pierden en silencio).
+```bash
+python instalar_mcp.py
+```
+
+El instalador registra el servidor en Claude Desktop y en ChatGPT Desktop (Codex) si los encuentra,
+con copia de seguridad de su configuración. Después **cierra la app del todo y ábrela de nuevo**.
+Para quitarlo: `python instalar_mcp.py --quitar`.
+
+### Claude Desktop
+Se registra en `%APPDATA%\Claude\claude_desktop_config.json`. Aparecerá «extractor-ofertas» en el menú
+de conectores del chat.
+
+### ChatGPT Desktop
+- **Modo Codex / Work:** ejecutan servidores MCP locales. El instalador lo registra en
+  `%USERPROFILE%\.codex\config.toml`.
+- **Chat normal:** solo admite servidores MCP remotos. Arranca el servidor por HTTP
+  (`python -m extractor_ofertas mcp --http`, puerto 8765) y conéctalo con el *Secure MCP Tunnel* de
+  OpenAI en Modo desarrollador.
 
 ## Uso
 
-- **Modo automático:** doble clic en `iniciar_vigilante.bat` (o `python -m extractor_ofertas`).
-  Cada PDF que aparezca en `entrada/` se procesa cuando termina de copiarse; el Excel va a
-  `salida/` y el PDF se mueve a `procesados/` (o a `errores/` con un `.error.txt` si falla).
-  Los PDFs que ya estaban en `entrada/` al arrancar también se procesan.
-- **Modo manual:** `python -m extractor_ofertas procesar folleto.pdf [--salida carpeta]`
+1. Copia el folleto en `entrada/`.
+2. En el chat: **«Procesa el folleto de la carpeta entrada con extractor-ofertas»**
+   (en Claude Desktop también está el prompt `procesar_folleto`).
+3. El modelo recorre las páginas, corrige lo que la verificación le señale y genera el Excel en `salida/`.
 
-Registro de actividad en `logs/extractor.log`.
+Un folleto de 78 páginas consume mucho contexto: si el chat se corta, abre otro y pide
+«continúa con el folleto»; retoma en la primera página pendiente.
 
-## Cómo funciona
-
-1. **Lectura híbrida**
-   - *PyMuPDF* carácter a carácter: texto, coordenadas y tamaño de letra.
-   - *pdfplumber* en paralelo (**triangulación**): si ve un precio que PyMuPDF no vio, se añade.
-   - *OCR Tesseract* de respaldo cuando la página no tiene capa de texto.
-2. **Líneas visuales por coordenadas:** solo se unen palabras que se solapan en vertical y
-   están cerca, así las columnas y cuadrículas no se mezclan. Reconstruye precios con
-   céntimos en superíndice (`1` `99` `€` → `1,99 €`).
-3. **Clasificación de precios:** principal, anterior (tachado con una línea dibujada o
-   precedido de "antes/PVP"), unitario (`€/kg`, `€/l`...), 2ª unidad, o secundario por tamaño.
-4. **Agrupación espacial:** cada precio principal es una oferta; los textos y precios
-   secundarios se asignan al más cercano, respetando los recuadros dibujados de las celdas.
-5. **Interpretación:** producto, marca, formato, promoción (2x1, 3x2, 2ª unidad al 50 %,
-   -20 %...), condiciones (tarjeta, online, máx. uds...), descuento calculado, sección y vigencia.
-
-## Verificación (lo que evita perder ofertas)
-
-| Control | Qué hace |
-|---|---|
-| Conteo de control con `€` | Compara los precios con `€` del texto bruto de cada página con los reconocidos, y lista los importes que faltan. |
-| Triangulación | Ejecuta PyMuPDF y pdfplumber y une lo que encuentra cada uno. |
-| Precios huérfanos | Todo precio detectado debe acabar en una oferta; si no, se avisa. |
-| Calidad de bloque | Precios sin descripción, descripciones sospechosamente largas (dos productos mezclados), precio anterior menor que el de oferta. |
-| Páginas de imagen | Página sin texto o con mucha imagen y sin precios → aviso o error. |
-
-## El Excel generado
+## El Excel
 
 - **Resumen:** totales, vigencia y **estado de verificación** (verde/amarillo/rojo).
-- **Ofertas:** una fila por oferta; las filas con alertas se resaltan en amarillo.
-- **Auditoria_paginas:** conteos por página y por motor.
-- **Incidencias:** qué revisar a mano y por qué.
-- **Texto_bruto:** cada línea leída, con posición y a qué oferta se asignó (trazabilidad).
+- **Ofertas:** producto, marca, formato, precio oferta y su significado, precio normal, descuento,
+  promoción, precio del lote, 2ª unidad, cupón, precio por kg/l (promo y normal), condiciones,
+  vigencia y alertas (filas amarillas).
+- **Auditoria_paginas:** por página, precios detectados, ofertas y estado (pendientes en rojo).
+- **Incidencias:** importes no encontrados en el PDF, precios sin oferta y descartes con su motivo.
+- **Texto_bruto:** cada línea del PDF y a qué oferta pertenece su precio.
 
-## Ajustes
+## Modo sin IA (borrador)
 
-Copia `config.ejemplo.json` a `config.json` y cambia lo que necesites (umbrales de
-agrupación, OCR, carpetas...). Cada cadena de supermercado maqueta distinto: si en un
-folleto real se mezclan productos vecinos, ajusta `radio_asociacion_*` y
-`penalizacion_texto_debajo`.
+`python -m extractor_ofertas procesar folleto.pdf` o `iniciar_vigilante.bat` generan un Excel por reglas
+geométricas, sin modelo. Sirve como borrador rápido, pero falla con maquetaciones complejas.
 
 ## Tests
 
 ```bash
 python -m pytest tests -q
 ```
-
-Genera un folleto sintético (cuadrícula, céntimos en superíndice, precios tachados, €/kg,
-promociones y una página de imagen) y comprueba cada campo extraído.

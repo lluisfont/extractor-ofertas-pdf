@@ -151,10 +151,20 @@ def _procesar_pagina(pag, pag_plumber, n: int, cfg: Config, res: Resultado, sigu
 
     marcar_tachados(precios, lectura.trazos_tachado(pag))
     clasificar_por_tamano(precios, cfg)
-    ofertas, sin_asignar, huerfanos, cabeceras = agrupar(lineas, precios, n, cfg, siguiente_id,
-                                                         lectura.contenedores(pag), excluir=(_VIGENCIA,))
+    ofertas, sin_asignar, huerfanos, cabeceras, condiciones = agrupar(
+        lineas, precios, n, cfg, siguiente_id, lectura.contenedores(pag), excluir=(_VIGENCIA,),
+        alto_pagina=pag.rect.height)
     for of in ofertas:
         interpretar(of)
+    # Un sello de promoción sin ningún texto de producto alrededor es decoración de la página
+    descartados = [o for o in ofertas if o.precio.tipo == "sello" and not o.campos.get("producto")]
+    ofertas = [o for o in ofertas if o not in descartados]
+    for i, of in enumerate(ofertas):
+        of.id = siguiente_id + i
+    if condiciones:
+        inc.append(Incidencia(n, "INFO", "Importes en condiciones",
+                              f"{len(condiciones)} importe(s) en textos legales/condiciones, no son ofertas: "
+                              + ", ".join(p.texto for p in condiciones[:8]) + ("..." if len(condiciones) > 8 else "")))
 
     # --- Auditoría de la página ---
     detectados_euro = [p for p in precios if p.con_euro]
@@ -175,6 +185,11 @@ def _procesar_pagina(pag, pag_plumber, n: int, cfg: Config, res: Resultado, sigu
         for a in of.alertas:
             if a.startswith("Precio sin descripción") or a.startswith("Descripción muy larga"):
                 inc.append(Incidencia(n, "AVISO", "Calidad de bloque", f"Oferta {of.id} ({of.precio.texto}): {a}"))
+    sin_precio = [o for o in ofertas if o.precio.tipo == "sello"]
+    if sin_precio:
+        inc.append(Incidencia(n, "INFO", "Ofertas sin precio",
+                              f"{len(sin_precio)} oferta(s) solo con sello de promoción: "
+                              + "; ".join(f"{o.precio.texto} {o.campos.get('producto', '')[:40]}" for o in sin_precio)))
 
     asignacion = {id(l): of.id for of in ofertas for l in of.lineas}
     for l in lineas:

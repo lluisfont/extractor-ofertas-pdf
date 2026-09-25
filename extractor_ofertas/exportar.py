@@ -18,10 +18,12 @@ ERROR = PatternFill("solid", fgColor="F8CBAD")
 OK = PatternFill("solid", fgColor="E2EFDA")
 
 COLUMNAS_OFERTAS = [
-    ("ID", 6, None), ("Página", 8, None), ("Sección", 18, None), ("Producto", 45, None), ("Marca", 16, None),
-    ("Formato", 16, None), ("Precio oferta", 13, EURO), ("Precio anterior", 14, EURO), ("Descuento %", 11, "0.0"),
-    ("Promoción", 22, None), ("Precio 2ª unidad", 14, EURO), ("Precio unitario", 13, EURO), ("Unidad PU", 10, None),
-    ("Condiciones", 24, None), ("Confianza", 10, None), ("Origen precio", 12, None), ("Posición (x, y)", 14, None),
+    ("ID", 6, None), ("Página", 8, None), ("Sección", 18, None), ("Producto", 45, None), ("Marca", 18, None),
+    ("Formato", 18, None), ("Precio oferta", 12, EURO), ("Nota precio oferta", 24, None),
+    ("Precio normal / anterior", 13, EURO), ("Descuento %", 11, "0.0"), ("Promoción", 20, None),
+    ("Precio total lote", 12, EURO), ("Uds. lote", 9, None), ("Precio 2ª unidad", 12, EURO), ("Cupón €", 10, EURO),
+    ("Precio unitario", 12, EURO), ("Unidad PU", 10, None), ("PU normal", 11, EURO), ("Condiciones", 24, None),
+    ("Vigencia oferta", 18, None), ("Confianza", 10, None), ("Origen precio", 12, None), ("Posición (x, y)", 14, None),
     ("Alertas", 40, None), ("Texto completo del bloque", 70, None),
 ]
 
@@ -72,12 +74,13 @@ def exportar(res: Resultado, carpeta: Path) -> Path:
         c = of.campos
         filas.append([
             of.id, of.pagina, of.seccion, c.get("producto"), c.get("marca"), c.get("formato"),
-            c.get("precio_oferta"), c.get("precio_anterior"), c.get("descuento_pct"), c.get("promocion"),
-            c.get("precio_segunda_unidad"), c.get("precio_unitario"), c.get("unidad_precio_unitario"),
-            c.get("condiciones"), of.precio.confianza, of.precio.motor,
-            f"{of.precio.caja.x0:.0f}, {of.precio.caja.y0:.0f}", "; ".join(of.alertas), c.get("texto_completo"),
+            c.get("precio_oferta"), c.get("nota_precio"), c.get("precio_anterior"), c.get("descuento_pct"),
+            c.get("promocion"), c.get("precio_total_lote"), c.get("unidades_lote"), c.get("precio_segunda_unidad"),
+            c.get("cupon"), c.get("precio_unitario"), c.get("unidad_precio_unitario"), c.get("precio_unitario_normal"),
+            c.get("condiciones"), c.get("vigencia"), of.precio.confianza, of.precio.motor,
+            (f"{of.precio.caja.x0:.0f}, {of.precio.caja.y0:.0f}" if of.precio.caja.x0 or of.precio.caja.y0 else ""), "; ".join(of.alertas), c.get("texto_completo"),
         ])
-    _filas(ws, COLUMNAS_OFERTAS, filas, relleno=lambda f: AVISO if f[17] else None)
+    _filas(ws, COLUMNAS_OFERTAS, filas, relleno=lambda f: AVISO if f[23] else None)
 
     # --- Resumen ---
     rs = wb.create_sheet("Resumen", 0)
@@ -93,6 +96,7 @@ def exportar(res: Resultado, carpeta: Path) -> Path:
         ("Precios detectados (todos los tipos)", sum(p.precios_detectados for p in res.paginas)),
         ("Precios recuperados por triangulación", sum(p.recuperados_triangulacion for p in res.paginas)),
         ("Precios huérfanos (sin oferta)", len(res.huerfanos)),
+        ("Ofertas sin precio (solo sello promo)", sum(1 for o in res.ofertas if o.precio.tipo == "sello")),
         ("Ofertas con alertas", sum(1 for o in res.ofertas if o.alertas)),
         ("Páginas leídas con OCR", sum(1 for p in res.paginas if p.metodo == "OCR")),
         ("OCR disponible", "Sí" if res.ocr_disponible else "No"),
