@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+config.json
+entrada/*
+salida/*
+procesados/*
+errores/*
+logs/*
+!*/.gitkeep
+tests/folleto_prueba.pdf

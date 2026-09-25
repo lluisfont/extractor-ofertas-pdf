@@ -1,0 +1,12 @@
+{
+  "mover_pdf_tras_procesar": true,
+  "factor_tamano_precio_sin_euro": 1.6,
+  "factor_precio_secundario": 0.6,
+  "radio_asociacion_factor": 7.0,
+  "radio_asociacion_minimo": 110.0,
+  "penalizacion_texto_debajo": 2.0,
+  "ocr_activo": true,
+  "ocr_idioma": "spa",
+  "tesseract_cmd": "C:\Program Files\Tesseract-OCR\tesseract.exe",
+  "triangulacion_pdfplumber": true
+}
