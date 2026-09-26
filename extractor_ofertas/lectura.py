@@ -97,15 +97,20 @@ def palabras_ocr(pagina: pymupdf.Page, cfg: Config) -> list[Palabra]:
 
 _RAPIDOCR = None
 _EURO_OCR = re.compile(r"(\d)\s*[eE€](?![a-zA-ZáéíóúñÁÉÍÓÚÑ])")  # el OCR suele leer «€» como «e»
-# El OCR confunde el «€» pequeño con «6», «e», «E» o «C» pegados a los céntimos («2,566Kilo» = 2,56 €/kg),
-# o lo omite delante de «Kilo»/«Litro» («(3,28 Kilo)»).
-_EURO_TRAS_CENTIMOS = re.compile(r"(\d+[,.]\d{2})[6eEC](?=[\s)\]]|$|[A-Za-z])")
+# El OCR confunde el «€» pequeño con «6», «e», «E», «C» o «t» pegados a los céntimos («2,566Kilo» = 2,56 €/kg,
+# «3,03t Litro»), o lo omite delante de «Kilo»/«Litro» («(3,28 Kilo)»), de «100 ml» («(2,00100ml)»,
+# «4,486100ml») o detrás de «unidad:» («Llevando 1 unidad: 1,89»).
+_EURO_POR_100 = re.compile(r"(\d+[,.]\d{2})[6eECt€]?(?=\s*/?\s*100\s*(?:ml|g)\b)", re.IGNORECASE)
+_EURO_TRAS_CENTIMOS = re.compile(r"(\d+[,.]\d{2})[6eECt](?=[\s)\]]|$|[A-Za-z])")
 _EURO_ANTES_UNIDAD = re.compile(r"(\d+[,.]\d{2})(?=\s*(?:kilo|litro)s?\b)", re.IGNORECASE)
+_EURO_TRAS_UNIDAD = re.compile(r"(unidad(?:es)?\s*:?\s*)(\d+[,.]\d{2})(?!\s*€)", re.IGNORECASE)
 
 
 def _euro_ocr(texto: str) -> str:
+    texto = _EURO_POR_100.sub(lambda m: m.group(1) + "€/", texto)
     texto = _EURO_TRAS_CENTIMOS.sub(lambda m: m.group(1) + "€", texto)
     texto = _EURO_ANTES_UNIDAD.sub(lambda m: m.group(1) + "€", texto)
+    texto = _EURO_TRAS_UNIDAD.sub(lambda m: m.group(1) + m.group(2) + "€", texto)
     return _EURO_OCR.sub(lambda m: m.group(1) + "€", texto)
 
 

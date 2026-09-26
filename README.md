@@ -79,6 +79,20 @@ en paralelo no se pisan. Un folleto de 78 páginas tardó unos 5 minutos con 6 a
 `p13.json` tiene la forma `{"ofertas": [...], "precios_no_oferta": [{"id": "P7", "motivo": "..."}], "vigencia_pagina": null}`,
 con los campos de `OfertaEntrada` en [verificacion.py](extractor_ofertas/verificacion.py).
 
+## Folletos solo de imágenes (escaneados)
+
+Si el PDF no tiene capa de texto (p. ej. Gadis), cada página se lee con **RapidOCR** (incluido en
+`requirements.txt`; Tesseract como alternativa) y el OCR hace de segunda lectura independiente:
+
+- Tres escalas de imagen fusionadas, y corrección de las confusiones típicas del «€» («6», «e», «t»…).
+- Las lecturas parciales («,95€» sin el «1») se verifican por los céntimos.
+- Los precios enteros dentro de círculos («2€») el OCR no los lee: quedan en una lista aparte
+  («Entero no legible por OCR») para revisarlos con una segunda lectura de la imagen.
+- Los avisos comprobados a mano se anotan en `salida/.sesiones/<folleto>/revisiones.json` y aparecen en el
+  Excel como «Comprobado a mano».
+
+Las páginas verificadas así figuran como `VERIFICADA (OCR)` y con origen «IA + OCR».
+
 ## El Excel
 
 - **Resumen:** totales, vigencia y **estado de verificación** (verde/amarillo/rojo).

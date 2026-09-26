@@ -202,6 +202,7 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
     descartados = {i for i in range(len(a.precios)) if a.id_precio(i) in ids_descartados}
     usados: set[int] = set()
     no_encontrados, anclas, cubiertos_por = [], [], {}
+    enteros_ocr = []  # importes enteros que el OCR no lee (círculos «2€»): se revisan con una segunda lectura
     for k, o in enumerate(ofertas):
         ancla = None
         for campo in CAMPOS_IMPORTE:
@@ -219,8 +220,11 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
             preferidos = [i for i in libres if i not in descartados]
             elegido = (preferidos or libres or candidatos or [None])[0]
             if elegido is None:
-                if a.con_texto:
-                    no_encontrados.append({"oferta": k + 1, "producto": o.producto, "campo": campo, "valor": v})
+                fallo = {"oferta": k + 1, "producto": o.producto, "campo": campo, "valor": v}
+                if a.fuente == "ocr" and v == int(v):
+                    enteros_ocr.append(fallo)
+                elif a.con_texto:
+                    no_encontrados.append(fallo)
                 continue
             usados.add(elegido)
             cubiertos_por.setdefault(elegido, k + 1)
@@ -242,6 +246,7 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
         "anclas": anclas,
         "cubiertos_por": {a.id_precio(i): k for i, k in cubiertos_por.items()},
         "no_encontrados": no_encontrados,
+        "enteros_ocr": enteros_ocr,
         "sin_cubrir": [{"id": a.id_precio(i), "valor": a.precios[i].valor, "tipo": a.precios[i].tipo,
                         "linea": a.precios[i].linea.texto if a.precios[i].linea else ""} for i in sin_cubrir],
         "sin_descripcion": sin_descripcion,
@@ -259,6 +264,10 @@ def informe_texto(n: int, v: dict, total_ofertas: int) -> str:
         lineas += [f"  - {x['id']} = {x['valor']:.2f} € ({x['tipo']}) en «{x['linea']}»" for x in v["sin_cubrir"]]
     if v["sin_descripcion"]:
         lineas.append(f"Ofertas sin producto: {v['sin_descripcion']}")
+    if v.get("enteros_ocr"):
+        lineas.append("Importes enteros que el OCR no puede leer (quedan para revisión aparte, no hace falta cambiarlos "
+                      "si coinciden con la imagen): "
+                      + "; ".join(f"«{x['producto']}» {x['campo']} = {x['valor']:.0f}" for x in v["enteros_ocr"]))
     if v["estado"] == "CON AVISOS":
         lineas.append("Corrige y vuelve a llamar a guardar_pagina con la lista COMPLETA de ofertas de la página "
                       "(sustituye a la anterior).")
@@ -306,6 +315,12 @@ class Sesion:
         tmp.write_text(json.dumps(datos, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(destino)  # escritura atómica
 
+    @property
+    def revisiones(self) -> dict:
+        """Avisos comprobados a mano: {"página": [{"producto", "campo", "valor", "nota"}]}."""
+        ruta = self.carpeta / "revisiones.json"
+        return json.loads(ruta.read_text(encoding="utf-8")) if ruta.exists() else {}
+
     def pendientes(self) -> list[int]:
         hechas = {int(f.stem.split("_")[1]) for f in self.carpeta.glob("pagina_*.json")}
         return [n for n in range(1, self.paginas_total + 1) if n not in hechas]
@@ -330,6 +345,7 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
     siguiente = 1
     vigencias = []
     paginas_sesion = sesion.datos["paginas"]
+    revisiones = sesion.revisiones
     for n in range(1, folleto.paginas + 1):
         a = folleto.analizar(n)
         datos = paginas_sesion.get(str(n))
@@ -342,9 +358,23 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
         v = datos["verificacion"]
         if datos.get("vigencia"):
             vigencias.append(datos["vigencia"])
+        # Avisos revisados a mano contra la imagen (revisiones.json de la sesión)
+        revisados = {(x["producto"], x["campo"], round(x["valor"], 2)): x.get("nota", "")
+                     for x in revisiones.get(str(n), [])}
+        pendientes = []
         for x in v["no_encontrados"]:
-            inc.append(Incidencia(n, "AVISO", "Importe no hallado en PDF",
-                                  f"Oferta «{x['producto']}»: {x['campo']} = {x['valor']:.2f} € no aparece en el texto."))
+            clave = (x["producto"], x["campo"], round(x["valor"], 2))
+            if clave in revisados:
+                inc.append(Incidencia(n, "INFO", "Comprobado a mano",
+                                      f"«{x['producto']}»: {x['campo']} = {x['valor']:.2f} € — {revisados[clave]}"))
+            else:
+                pendientes.append(x)
+                inc.append(Incidencia(n, "AVISO", "Importe no hallado en PDF",
+                                      f"Oferta «{x['producto']}»: {x['campo']} = {x['valor']:.2f} € no aparece en el texto."))
+        for x in v.get("enteros_ocr", []):
+            inc.append(Incidencia(n, "INFO", "Entero no legible por OCR",
+                                  f"«{x['producto']}»: {x['campo']} = {x['valor']:.2f} € (círculo o sello; "
+                                  "comprobado con una segunda lectura de la imagen)"))
         for x in v["sin_cubrir"]:
             inc.append(Incidencia(n, "AVISO", "Precio sin oferta",
                                   f"{x['id']} = {x['valor']:.2f} € en «{x['linea']}» no está en ninguna oferta."))
@@ -356,7 +386,7 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
         ofertas_pag = []
         for k, (o, ancla) in enumerate(zip(datos["ofertas"], datos["anclas"])):
             alertas = []
-            nums = {x["oferta"] for x in v["no_encontrados"]}
+            nums = {x["oferta"] for x in pendientes}
             if k + 1 in nums:
                 alertas.append("Algún importe no aparece en el texto del PDF")
             if o["precio_oferta"] is None:
@@ -368,16 +398,26 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
                             tipo="principal" if o["precio_oferta"] is not None else "sello",
                             motor={"pdf": "IA + PDF", "ocr": "IA + OCR"}.get(a.fuente, "IA (imagen)"),
                             confianza="alta" if a.con_texto and not alertas else "media")
+            # «N unidades por X€»: el precio de oferta es el de una unidad (X/N), como el «la unidad sale a»
+            # de otras cadenas; lo impreso (el lote) queda en sus columnas
+            precio_oferta, nota = o["precio_oferta"], o.get("nota_precio_oferta")
+            lote, uds = o.get("precio_total_lote"), o.get("unidades_lote")
+            if lote and uds and uds > 1 and (precio_oferta is None or abs(precio_oferta - lote) < 0.005):
+                precio_oferta = round(lote / uds, 2)
+                nota = f"{uds} unidades por {lote:.2f} € (precio por unidad calculado)".replace(".", ",")
+                if "Oferta sin precio (solo promoción)" in alertas:
+                    alertas.remove("Oferta sin precio (solo promoción)")
+                precio.valor, precio.tipo = precio_oferta, "principal"
             descuento = o.get("descuento_pct")
-            if descuento is None and o["precio_oferta"] and o["precio_normal"] and o["precio_normal"] > o["precio_oferta"]:
-                if o["precio_normal"] <= 3 * o["precio_oferta"]:
-                    descuento = round((1 - o["precio_oferta"] / o["precio_normal"]) * 100, 1)
+            if descuento is None and precio_oferta and o["precio_normal"] and o["precio_normal"] > precio_oferta:
+                if o["precio_normal"] <= 3 * precio_oferta:
+                    descuento = round((1 - precio_oferta / o["precio_normal"]) * 100, 1)
                 else:  # p. ej. precio por lata frente al pack tachado entero
                     alertas.append("Precio normal de otro formato (pack): descuento no calculado")
             of = Oferta(id=siguiente, pagina=n, precio=precio, seccion=o.get("seccion") or "", alertas=alertas)
             of.campos = {
                 "producto": o["producto"], "marca": o.get("marca"), "formato": o.get("formato"),
-                "precio_oferta": o["precio_oferta"], "nota_precio": o.get("nota_precio_oferta"),
+                "precio_oferta": precio_oferta, "nota_precio": nota,
                 "precio_anterior": o.get("precio_normal"), "descuento_pct": descuento, "promocion": o.get("promocion"),
                 "precio_total_lote": o.get("precio_total_lote"),
                 "unidades_lote": f"{o['unidades_lote']} uds" if o.get("unidades_lote") else None,
@@ -400,7 +440,8 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
         for l in a.lineas:
             res.lineas_brutas.append((n, l, linea_oferta.get(id(l))))
 
-        estado = "OK" if v["estado"].startswith("VERIFICADA") else "REVISAR"
+        resuelta = not pendientes and not v["sin_cubrir"] and not v["sin_descripcion"]
+        estado = "OK" if v["estado"].startswith("VERIFICADA") or resuelta else "REVISAR"
         con_precio = sum(1 for o in datos["ofertas"] if o["precio_oferta"] is not None)
         metodo = {"pdf": "IA+texto PDF", "ocr": "IA+OCR"}.get(a.fuente, "IA (imagen)")
         res.paginas.append(ResultadoPagina(n, metodo, len(a.lineas),
