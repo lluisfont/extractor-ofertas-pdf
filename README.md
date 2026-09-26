@@ -60,6 +60,25 @@ de conectores del chat.
 Un folleto de 78 páginas consume mucho contexto: si el chat se corta, abre otro y pide
 «continúa con el folleto»; retoma en la primera página pendiente.
 
+## Uso con Claude Code (más rápido: páginas en paralelo)
+
+Las mismas herramientas están disponibles por línea de comandos, para que un agente las use desde la terminal:
+
+```bash
+python -m extractor_ofertas.consola_ia leer    entrada/folleto.pdf 13 p13.png   # imagen + capa de texto + precios P1..Pn
+python -m extractor_ofertas.consola_ia guardar entrada/folleto.pdf 13 p13.json  # verifica y guarda la página
+python -m extractor_ofertas.consola_ia estado  entrada/folleto.pdf
+python -m extractor_ofertas.consola_ia excel   entrada/folleto.pdf
+```
+
+En Claude Code basta con pedir **«procesa el folleto de entrada»**: reparte las páginas entre varios
+subagentes que trabajan a la vez. Cada página se guarda en su propio archivo, así que las escrituras
+en paralelo no se pisan. Un folleto de 78 páginas tardó unos 5 minutos con 6 agentes
+(768 ofertas, las 78 páginas verificadas).
+
+`p13.json` tiene la forma `{"ofertas": [...], "precios_no_oferta": [{"id": "P7", "motivo": "..."}], "vigencia_pagina": null}`,
+con los campos de `OfertaEntrada` en [verificacion.py](extractor_ofertas/verificacion.py).
+
 ## El Excel
 
 - **Resumen:** totales, vigencia y **estado de verificación** (verde/amarillo/rojo).
