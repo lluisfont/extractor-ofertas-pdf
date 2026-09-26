@@ -39,6 +39,7 @@ _ANTERIOR_ANTES = re.compile(r"(antes|pvp|p\.v\.p\.?|precio\s+anterior|precio\s+
                              re.IGNORECASE)
 _SEGUNDA_ANTES = re.compile(r"(2\s?[ªa]|segunda)\s*(unidad|ud\.?)?\s*[:a]?\s*$", re.IGNORECASE)
 _FECHA_CONTEXTO = re.compile(r"(del|al|hasta|desde|válid[oa]|valid[oa]|oferta)\s*(el\s*)?$", re.IGNORECASE)
+_AHORRO_ANTES = re.compile(r"ahorr[ao]s?\s*:?\s*$", re.IGNORECASE)
 _RANGO_TRAS = re.compile(r"^\s*[-–]\s*\d{1,4}[,.'’]\d{2}(?=\s*(?:€|eur))", re.IGNORECASE)
 _FECHA_TRAS = re.compile(r"^\s*[./-]\s*\d{2,4}(?!\s*%)")  # «12-10» sí; «1,99 -10%» no
 
@@ -56,6 +57,8 @@ def _linea_superior(linea: Linea, caja: Caja, lineas: list[Linea]) -> Linea | No
             continue
         if min(l.x1, caja.x1 + 10) - max(l.x0, caja.x0 - 10) <= 0:
             continue
+        if l.texto.strip().startswith("€") or not any(c.isalpha() for c in l.texto):
+            continue  # fragmentos de unidad o números sueltos de otro precio no son etiquetas
         if mejor is None or l.y1 > mejor.y1:
             mejor = l
     return mejor
@@ -85,8 +88,10 @@ def detectar_precios(lineas: list[Linea], pagina: int, cfg, motor: str = "pymupd
             if rango:
                 con_euro = True
                 despues = despues[rango.end():]
+            parece_fecha = (int(ent.replace(".", "")) <= 31 and cent is not None and 1 <= int(cent) <= 12
+                            and (_FECHA_TRAS.match(despues) or _FECHA_CONTEXTO.search(antes)))
             if not con_euro:
-                if _MEDIDA_TRAS.match(despues) or _FECHA_TRAS.match(despues) or _FECHA_CONTEXTO.search(antes):
+                if _MEDIDA_TRAS.match(despues) or parece_fecha:
                     continue
                 if tamano < cfg.factor_tamano_precio_sin_euro * mediana and not _UNIDAD_TRAS.match(despues):
                     continue
@@ -109,6 +114,10 @@ def detectar_precios(lineas: list[Linea], pagina: int, cfg, motor: str = "pymupd
             mt = _TOTAL_ANTES.search(contexto)
             if previo is not None and previo.tipo == "unitario" and not entre.strip(" €"):
                 p.tipo, p.unidad = "unitario", previo.unidad  # «El kg 17,69€ 16,95€»
+            elif _AHORRO_ANTES.search(contexto):
+                p.tipo = "ahorro"  # «AHORRA 0,20 €»
+            elif mu and _UNIDAD_TRAS.match(despues) and tamano >= 2 * mediana:
+                p.unidad = _normalizar_unidad(mu.group("u"))  # precio grande «4,75 €/kg»: sigue siendo el principal
             elif mu:
                 p.tipo, p.unidad = "unitario", _normalizar_unidad(mu.group("u"))
             elif _CUPON_ANTES.search(contexto):
@@ -119,7 +128,7 @@ def detectar_precios(lineas: list[Linea], pagina: int, cfg, motor: str = "pymupd
                 p.tipo = "anterior"
             elif _SEGUNDA_ANTES.search(contexto):
                 p.tipo = "segunda_unidad"
-            elif _CONDICION_ANTES.search(contexto):
+            elif _CONDICION_ANTES.search(antes):  # solo la misma línea: la de encima puede ser de otra oferta
                 p.tipo = "condicion"
             precios.append(p)
             previo, fin_previo = p, m.end()

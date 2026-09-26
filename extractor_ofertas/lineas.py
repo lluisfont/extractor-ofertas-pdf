@@ -32,21 +32,40 @@ def construir_lineas(palabras: list[Palabra]) -> list[Linea]:
             ref = max(candidatas, key=lambda w: w.x1)
             if p.x0 < grupo[-1].x0 - 0.3 * p.tamano:
                 continue
-            hueco = p.x0 - ref.x1
-            menor, mayor = min(p.tamano, ref.tamano), max(p.tamano, ref.tamano)
-            if mayor > 1.8 * menor:
-                # Tamaños muy distintos: solo se unen las piezas de un precio (1 | 99 | €)
-                if p.tamano > ref.tamano:
-                    continue  # un número grande nunca continúa una línea de letra pequeña
-                pequeno, grande = p, ref
-                pieza = _CENTIMOS.match(pequeno.texto) or pequeno.texto in ("€", "€.", ",", ".", "'", "’")
-                dentro = pequeno.y0 >= grande.y0 - 0.1 * grande.alto and pequeno.y1 <= grande.y1 + 0.1 * grande.alto
-                if not (pieza and dentro) or hueco > 0.25 * menor:
+            grande = max(candidatas, key=lambda w: w.tamano)
+            if grande.tamano > 1.8 * p.tamano:
+                # p es mucho más pequeña que el número de la línea: solo puede ser una pieza del precio
+                # (céntimos, «€», «€/ud», coma). Se mide contra el número grande, no contra otra pieza.
+                pieza = ((_CENTIMOS.match(p.texto) and p.tamano >= 0.3 * grande.tamano)  # no «50 cl» dentro del 6
+                         or p.texto.startswith("€") or p.texto in (",", ".", "'", "’"))
+                dentro = p.y0 >= grande.y0 - 0.1 * grande.alto and p.y1 <= grande.y1 + 0.1 * grande.alto
+                if not (pieza and dentro):
                     continue
+                if p.texto.startswith("€"):
+                    if p.x0 < grande.x1 - 0.12 * grande.tamano:
+                        continue  # unidad que empieza dentro de la caja del número: es texto de debajo
+                elif p.x0 < grande.x1 - 0.25 * grande.tamano:
+                    continue  # los céntimos van a la derecha del número (arriba o abajo según la cadena)
+                if p.x0 - max(w.x1 for w in grupo) > 0.5 * p.tamano:
+                    continue  # demasiado lejos de lo último del precio
+                hueco = 0.0
+                menor = mayor = p.tamano
+                es_pieza = True
+            else:
+                es_pieza = False
+                if _CENTIMOS.match(p.texto):
+                    # unos céntimos se miden contra el número, no contra una pieza «€…» apilada ya unida
+                    ref = max((w for w in candidatas if not w.texto.startswith("€")), key=lambda w: w.x1, default=ref)
+                hueco = p.x0 - ref.x1
+                menor, mayor = min(p.tamano, ref.tamano), max(p.tamano, ref.tamano)
+                if mayor > 1.8 * menor:
+                    continue  # un número grande nunca continúa una línea de letra pequeña
             if hueco < -0.3 * mayor or hueco > 0.9 * menor:
                 continue
             solape = _solape_vertical(ref.y0, ref.y1, p.y0, p.y1)
-            if solape > mejor_solape:
+            if es_pieza:
+                solape -= 0.5  # a igualdad, gana la línea de su mismo tamaño («2 uds: 5,18 €/kg»)
+            if mejor is None or solape > mejor_solape:
                 mejor, mejor_solape = grupo, solape
         if mejor is None:
             lineas.append([p])
@@ -59,15 +78,11 @@ def construir_lineas(palabras: list[Palabra]) -> list[Linea]:
 
 
 def _ordenar_apilados(palabras: list[Palabra]) -> list[Palabra]:
-    """En «16 €/,99» el € va encima de los céntimos: se coloca detrás para leer «16,99€»."""
-    ps = list(palabras)
-    for i in range(len(ps) - 1):
-        a, b = ps[i], ps[i + 1]
-        if a.texto in ("€", "€.") and _CENTIMOS.match(b.texto):
-            solape = min(a.x1, b.x1) - max(a.x0, b.x0)
-            if solape > 0.4 * min(a.x1 - a.x0, b.x1 - b.x0):
-                ps[i], ps[i + 1] = b, a
-    return ps
+    """Piezas apiladas del precio: «€», «€/ud» o «€/kg» encima o debajo de los céntimos se
+    colocan detrás para leer «16,99€» o «6,80€/L»."""
+    # Las piezas «€…» se ordenan por donde terminan: quedan detrás de los céntimos apilados
+    # («20 €/par ,99» -> «20,99€/par») sin alterar el orden del texto normal.
+    return sorted(palabras, key=lambda w: w.x1 if w.texto.startswith("€") else w.x0)
 
 
 def _componer(palabras: list[Palabra]) -> Linea:
@@ -80,7 +95,7 @@ def _componer(palabras: list[Palabra]) -> Linea:
             hueco = p.x0 - ant.x1
             pegado = hueco < 0.15 * min(p.tamano, ant.tamano)
             es_centimo = (_ENTERO.match(ant.texto) and _CENTIMOS.match(p.texto)
-                          and p.tamano < 0.85 * ant.tamano
+                          and 0.3 * ant.tamano <= p.tamano < 0.85 * ant.tamano
                           and p.y0 >= ant.y0 - 0.1 * ant.alto)  # en superíndice, no un precio encima
             dos_numeros = ant.texto[-1:].isdigit() and p.texto[:1].isdigit()
             if es_centimo and not re.search(r"[,.'’]$", ant.texto) and not re.match(r"^[,.'’]", p.texto):
