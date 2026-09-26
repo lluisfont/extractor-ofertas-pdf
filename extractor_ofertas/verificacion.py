@@ -70,12 +70,30 @@ class AnalisisPagina:
     lineas: list[Linea]
     precios: list[Precio]   # deduplicados, con id P1..Pn en el orden de la lista
     relevantes: set[int]    # índices de precios que deben quedar cubiertos
-    con_texto: bool
+    con_texto: bool          # hay texto con el que verificar (capa del PDF u OCR)
     cobertura_imagen: float
     texto_bruto: str
+    fuente: str = "pdf"      # pdf | ocr | ninguna
 
     def id_precio(self, i: int) -> str:
         return f"P{i + 1}"
+
+
+_PARCIAL_OCR = re.compile(r"(?<![\d])[,.](\d{2})\s*€")
+
+
+def _parciales_ocr(lineas: list[Linea], n: int) -> list[Precio]:
+    """«,95€» sin parte entera: el OCR perdió el «1». Se guarda como precio parcial (valor = céntimos)."""
+    from .modelos import Caja
+    parciales = []
+    for l in lineas:
+        for m in _PARCIAL_OCR.finditer(l.texto):
+            palabras = l.palabras_en(m.start(), m.end())
+            if palabras:
+                parciales.append(Precio(valor=int(m.group(1)) / 100, texto=m.group(0), caja=Caja.de(palabras),
+                                        tamano=max(w.tamano for w in palabras), pagina=n, con_euro=True,
+                                        tipo="parcial", motor="ocr", linea=l, confianza="baja"))
+    return parciales
 
 
 class Folleto:
@@ -102,13 +120,23 @@ class Folleto:
         pag = self.doc[n - 1]
         palabras = lectura.palabras_pymupdf(pag)
         con_texto = len(palabras) >= self.cfg.ocr_umbral_palabras
+        fuente = "pdf"
+        if not con_texto:
+            # PDF solo de imágenes: el OCR da la segunda lectura independiente para verificar
+            if lectura.ocr_disponible(self.cfg):
+                palabras = lectura.palabras_ocr(pag, self.cfg)
+                con_texto, fuente = bool(palabras), "ocr"
+            else:
+                fuente = "ninguna"
         lineas = construir_lineas(palabras)
         precios = detectar_precios(lineas, n, self.cfg)
-        if self.plumber is not None and con_texto:
+        if self.plumber is not None and fuente == "pdf":
             for q in detectar_precios(construir_lineas(lectura.palabras_pdfplumber(self.plumber.pages[n - 1])),
                                       n, self.cfg, motor="pdfplumber"):
                 if q.con_euro and not any(mismo_precio(p, q) for p in precios) and not solapa_con_alguno(q, precios):
                     precios.append(q)
+        if fuente == "ocr":
+            precios += _parciales_ocr(lineas, n)
         # Texto con contorno o sombra: el mismo precio dos veces en el mismo sitio
         unicos: list[Precio] = []
         for p in precios:
@@ -123,7 +151,9 @@ class Folleto:
                       if p.tipo != "condicion" and not (p.linea and p.tamano <= mediana and _LEGAL.search(p.linea.texto))}
         a = AnalisisPagina(numero=n, lineas=lineas, precios=unicos, relevantes=relevantes, con_texto=con_texto,
                            cobertura_imagen=lectura.cobertura_imagenes(pag),
-                           texto_bruto=lectura.normalizar(pag.get_text()))
+                           texto_bruto=(lectura.normalizar(pag.get_text()) if fuente == "pdf"
+                                        else "\n".join(l.texto for l in lineas)),
+                           fuente=fuente)
         self._cache[n] = a
         return a
 
@@ -139,14 +169,21 @@ def texto_para_modelo(a: AnalisisPagina, total: int) -> str:
         partes.append("Esta página NO tiene capa de texto (es una imagen): extrae las ofertas leyendo la imagen. "
                       "Sus importes no se podrán verificar automáticamente.")
     else:
-        partes.append("CAPA DE TEXTO DEL PDF (x, y en puntos desde arriba-izquierda; t = tamaño de letra):")
+        if a.fuente == "ocr":
+            partes.append("Esta página es una IMAGEN: el texto de abajo lo ha leído un OCR y puede tener errores "
+                          "(céntimos o un «1» perdidos, «€» leído como otra letra). La IMAGEN manda: usa los importes "
+                          "que ves en ella. Si un P# es una lectura errónea del OCR, ponlo en precios_no_oferta con "
+                          "motivo «lectura OCR errónea: el precio real es X».")
+        partes.append(("TEXTO LEÍDO POR OCR" if a.fuente == "ocr" else "CAPA DE TEXTO DEL PDF")
+                      + " (x, y en puntos desde arriba-izquierda; t = tamaño de letra):")
         partes += [f"[x={l.x0:.0f} y={l.y0:.0f} t={l.tamano:.0f}] {l.texto}" for l in a.lineas]
         partes.append("")
         partes.append("PRECIOS DETECTADOS QUE DEBEN QUEDAR CUBIERTOS (cada uno en una oferta, o en precios_no_oferta con motivo):")
         for i, p in enumerate(a.precios):
             if i in a.relevantes:
-                partes.append(f"{a.id_precio(i)} = {p.valor:.2f} € ({p.tipo}{', tachado' if p.tachado else ''}) "
-                              f"en «{p.linea.texto if p.linea else ''}»")
+                importe = f"?,{round(p.valor * 100):02d} €" if p.tipo == "parcial" else f"{p.valor:.2f} €"
+                partes.append(f"{a.id_precio(i)} = {importe} ({'lectura parcial del OCR: falta la parte entera' if p.tipo == 'parcial' else p.tipo}"
+                              f"{', tachado' if p.tachado else ''}) en «{p.linea.texto if p.linea else ''}»")
         otros = [i for i in range(len(a.precios)) if i not in a.relevantes]
         if otros:
             partes.append("Importes en textos legales/condiciones (no hace falta cubrirlos): "
@@ -173,6 +210,10 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
                 continue
             v = round(float(v), 2)
             candidatos = por_valor.get(v, [])
+            if not candidatos:
+                # lectura parcial del OCR («,95€» de «1,95€»): coincide por los céntimos
+                candidatos = [i for i, q in enumerate(a.precios)
+                              if q.tipo == "parcial" and round(q.valor * 100) == round(v * 100) % 100]
             libres = [i for i in candidatos if i not in usados]
             # primero los precios no descartados, luego cualquiera con ese importe
             preferidos = [i for i in libres if i not in descartados]
@@ -195,7 +236,7 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
     elif sin_cubrir or no_encontrados or sin_descripcion:
         estado = "CON AVISOS"
     else:
-        estado = "VERIFICADA"
+        estado = "VERIFICADA" if a.fuente == "pdf" else "VERIFICADA (OCR)"
     return {
         "estado": estado,
         "anclas": anclas,
@@ -271,7 +312,7 @@ class Sesion:
 
     def con_avisos(self) -> list[int]:
         return sorted(int(n) for n, p in self.datos["paginas"].items()
-                      if p["verificacion"]["estado"] != "VERIFICADA")
+                      if not p["verificacion"]["estado"].startswith("VERIFICADA"))
 
 
 # --- Resultado para el Excel -------------------------------------------------------------
@@ -325,7 +366,7 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
             caja = Caja(ancla["x"], ancla["y"], ancla["x"], ancla["y"]) if ancla else Caja(0, 0, 0, 0)
             precio = Precio(valor=o["precio_oferta"], texto="", caja=caja, tamano=0, pagina=n, con_euro=True,
                             tipo="principal" if o["precio_oferta"] is not None else "sello",
-                            motor="IA + PDF" if a.con_texto else "IA (imagen)",
+                            motor={"pdf": "IA + PDF", "ocr": "IA + OCR"}.get(a.fuente, "IA (imagen)"),
                             confianza="alta" if a.con_texto and not alertas else "media")
             descuento = o.get("descuento_pct")
             if descuento is None and o["precio_oferta"] and o["precio_normal"] and o["precio_normal"] > o["precio_oferta"]:
@@ -359,9 +400,10 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
         for l in a.lineas:
             res.lineas_brutas.append((n, l, linea_oferta.get(id(l))))
 
-        estado = {"VERIFICADA": "OK", "CON AVISOS": "REVISAR"}.get(v["estado"], "REVISAR")
+        estado = "OK" if v["estado"].startswith("VERIFICADA") else "REVISAR"
         con_precio = sum(1 for o in datos["ofertas"] if o["precio_oferta"] is not None)
-        res.paginas.append(ResultadoPagina(n, "IA+verificación" if a.con_texto else "IA (imagen)", len(a.lineas),
+        metodo = {"pdf": "IA+texto PDF", "ocr": "IA+OCR"}.get(a.fuente, "IA (imagen)")
+        res.paginas.append(ResultadoPagina(n, metodo, len(a.lineas),
                                            bruto, 0, len(a.precios), con_precio, len(a.precios) - con_precio, 0,
                                            len(v["sin_cubrir"]), len(ofertas_pag), round(a.cobertura_imagen, 2), estado))
     texto_doc = " ".join(folleto.analizar(n).texto_bruto for n in range(1, folleto.paginas + 1))

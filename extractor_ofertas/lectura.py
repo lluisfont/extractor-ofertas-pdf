@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import pymupdf
 
@@ -63,22 +64,93 @@ def palabras_pdfplumber(pagina_plumber) -> list[Palabra]:
             for w in crudas if w["text"].strip()]
 
 
-def ocr_disponible(cfg: Config) -> bool:
+def motor_ocr(cfg: Config) -> str | None:
+    """OCR disponible: «rapidocr» (preferido: mejor con números de folleto) o «tesseract»."""
     if not cfg.ocr_activo:
-        return False
-    ruta = cfg.ruta_tesseract()
-    if not ruta:
-        return False
+        return None
     try:
-        import pytesseract
-        pytesseract.pytesseract.tesseract_cmd = ruta
-        pytesseract.get_tesseract_version()
-        return True
-    except Exception:
-        return False
+        import rapidocr_onnxruntime  # noqa: F401
+        return "rapidocr"
+    except ImportError:
+        pass
+    ruta = cfg.ruta_tesseract()
+    if ruta:
+        try:
+            import pytesseract
+            pytesseract.pytesseract.tesseract_cmd = ruta
+            pytesseract.get_tesseract_version()
+            return "tesseract"
+        except Exception:
+            pass
+    return None
+
+
+def ocr_disponible(cfg: Config) -> bool:
+    return motor_ocr(cfg) is not None
 
 
 def palabras_ocr(pagina: pymupdf.Page, cfg: Config) -> list[Palabra]:
+    if motor_ocr(cfg) == "rapidocr":
+        return _palabras_rapidocr(pagina)
+    return _palabras_tesseract(pagina, cfg)
+
+
+_RAPIDOCR = None
+_EURO_OCR = re.compile(r"(\d)\s*[eE€](?![a-zA-ZáéíóúñÁÉÍÓÚÑ])")  # el OCR suele leer «€» como «e»
+# El OCR confunde el «€» pequeño con «6», «e», «E» o «C» pegados a los céntimos («2,566Kilo» = 2,56 €/kg),
+# o lo omite delante de «Kilo»/«Litro» («(3,28 Kilo)»).
+_EURO_TRAS_CENTIMOS = re.compile(r"(\d+[,.]\d{2})[6eEC](?=[\s)\]]|$|[A-Za-z])")
+_EURO_ANTES_UNIDAD = re.compile(r"(\d+[,.]\d{2})(?=\s*(?:kilo|litro)s?\b)", re.IGNORECASE)
+
+
+def _euro_ocr(texto: str) -> str:
+    texto = _EURO_TRAS_CENTIMOS.sub(lambda m: m.group(1) + "€", texto)
+    texto = _EURO_ANTES_UNIDAD.sub(lambda m: m.group(1) + "€", texto)
+    return _EURO_OCR.sub(lambda m: m.group(1) + "€", texto)
+
+
+_PRECIO_COMPLETO = re.compile(r"\d+[,.]\d{2}")
+
+
+def _iou(a, b) -> float:
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union else 0.0
+
+
+def _palabras_rapidocr(pagina: pymupdf.Page) -> list[Palabra]:
+    """OCR a varias escalas: cada escala acierta cosas distintas (p. ej. el «1» delgado de «1,95»).
+    Las lecturas de la misma zona se fusionan quedándose con la más completa."""
+    global _RAPIDOCR
+    if _RAPIDOCR is None:
+        from rapidocr_onnxruntime import RapidOCR
+        _RAPIDOCR = RapidOCR()
+    lecturas = []  # (caja, texto, confianza)
+    for escala in (1.25, 2.0, 2.75):
+        pix = pagina.get_pixmap(matrix=pymupdf.Matrix(escala, escala), alpha=False)
+        res, _ = _RAPIDOCR(pix.tobytes("png"))
+        for caja, texto, conf in res or []:
+            xs, ys = [p[0] / escala for p in caja], [p[1] / escala for p in caja]
+            texto = _euro_ocr(normalizar(texto.strip()))
+            if texto:
+                lecturas.append(((min(xs), min(ys), max(xs), max(ys)), texto, float(conf)))
+
+    def calidad(l):
+        _, t, c = l
+        return (bool(_PRECIO_COMPLETO.search(t)), len(t), c)
+
+    elegidas = []
+    for l in sorted(lecturas, key=calidad, reverse=True):
+        if any(_iou(l[0], e[0]) > 0.3 for e in elegidas):
+            continue
+        elegidas.append(l)
+    return [Palabra(texto=t, x0=c[0], y0=c[1], x1=c[2], y1=c[3], tamano=round((c[3] - c[1]) * 0.85, 2), motor="ocr")
+            for c, t, conf in elegidas if conf >= 0.5]
+
+
+def _palabras_tesseract(pagina: pymupdf.Page, cfg: Config) -> list[Palabra]:
     import pytesseract
     from PIL import Image
 
@@ -99,7 +171,7 @@ def palabras_ocr(pagina: pymupdf.Page, cfg: Config) -> list[Palabra]:
         if not texto or conf < cfg.ocr_confianza_minima:
             continue
         x, y, w, h = (datos[k][i] / escala for k in ("left", "top", "width", "height"))
-        palabras.append(Palabra(texto=normalizar(texto), x0=x, y0=y, x1=x + w, y1=y + h,
+        palabras.append(Palabra(texto=_euro_ocr(normalizar(texto)), x0=x, y0=y, x1=x + w, y1=y + h,
                                 tamano=round(h * 1.1, 2), motor="ocr"))
     return palabras
 
