@@ -36,7 +36,9 @@ def construir_lineas(palabras: list[Palabra]) -> list[Linea]:
             menor, mayor = min(p.tamano, ref.tamano), max(p.tamano, ref.tamano)
             if mayor > 1.8 * menor:
                 # Tamaños muy distintos: solo se unen las piezas de un precio (1 | 99 | €)
-                pequeno, grande = (p, ref) if p.tamano < ref.tamano else (ref, p)
+                if p.tamano > ref.tamano:
+                    continue  # un número grande nunca continúa una línea de letra pequeña
+                pequeno, grande = p, ref
                 pieza = _CENTIMOS.match(pequeno.texto) or pequeno.texto in ("€", "€.", ",", ".", "'", "’")
                 dentro = pequeno.y0 >= grande.y0 - 0.1 * grande.alto and pequeno.y1 <= grande.y1 + 0.1 * grande.alto
                 if not (pieza and dentro) or hueco > 0.25 * menor:
@@ -80,10 +82,11 @@ def _componer(palabras: list[Palabra]) -> Linea:
             es_centimo = (_ENTERO.match(ant.texto) and _CENTIMOS.match(p.texto)
                           and p.tamano < 0.85 * ant.tamano
                           and p.y0 >= ant.y0 - 0.1 * ant.alto)  # en superíndice, no un precio encima
+            dos_numeros = ant.texto[-1:].isdigit() and p.texto[:1].isdigit()
             if es_centimo and not re.search(r"[,.'’]$", ant.texto) and not re.match(r"^[,.'’]", p.texto):
                 texto += ","
-            elif not pegado:
-                texto += " "
+            elif not pegado or dos_numeros:
+                texto += " "  # «3x2» + «0,83» no debe leerse «3x20,83»
         ini = len(texto)
         texto += p.texto
         tramos.append((ini, len(texto)))

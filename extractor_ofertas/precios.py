@@ -39,7 +39,8 @@ _ANTERIOR_ANTES = re.compile(r"(antes|pvp|p\.v\.p\.?|precio\s+anterior|precio\s+
                              re.IGNORECASE)
 _SEGUNDA_ANTES = re.compile(r"(2\s?[ªa]|segunda)\s*(unidad|ud\.?)?\s*[:a]?\s*$", re.IGNORECASE)
 _FECHA_CONTEXTO = re.compile(r"(del|al|hasta|desde|válid[oa]|valid[oa]|oferta)\s*(el\s*)?$", re.IGNORECASE)
-_FECHA_TRAS = re.compile(r"^\s*[./-]\s*\d{2,4}")
+_RANGO_TRAS = re.compile(r"^\s*[-–]\s*\d{1,4}[,.'’]\d{2}(?=\s*(?:€|eur))", re.IGNORECASE)
+_FECHA_TRAS = re.compile(r"^\s*[./-]\s*\d{2,4}(?!\s*%)")  # «12-10» sí; «1,99 -10%» no
 
 
 def _normalizar_unidad(u: str) -> str:
@@ -80,6 +81,10 @@ def detectar_precios(lineas: list[Linea], pagina: int, cfg, motor: str = "pymupd
             tamano = max(p.tamano for p in palabras)
             caja = Caja.de(palabras)
 
+            rango = _RANGO_TRAS.match(despues)  # «12,07-12,67 €/kg»: el primero también es precio
+            if rango:
+                con_euro = True
+                despues = despues[rango.end():]
             if not con_euro:
                 if _MEDIDA_TRAS.match(despues) or _FECHA_TRAS.match(despues) or _FECHA_CONTEXTO.search(antes):
                     continue
@@ -127,8 +132,8 @@ def marcar_tachados(precios: list[Precio], segmentos) -> None:
         for x0, y0, x1, y1 in segmentos:
             sx0, sx1 = min(x0, x1), max(x0, x1)
             solape = min(sx1, c.x1) - max(sx0, c.x0)
-            if solape < 0.6 * c.ancho:
-                continue
+            if solape < 0.6 * c.ancho or (sx1 - sx0) > 2.5 * c.ancho:
+                continue  # no cruza el precio, o es una línea larga (separador, borde)
             # altura del segmento en el centro del precio
             if x1 != x0:
                 y = y0 + (y1 - y0) * ((c.cx - x0) / (x1 - x0))

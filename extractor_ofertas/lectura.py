@@ -122,13 +122,15 @@ def trazos_tachado(pagina: pymupdf.Page) -> list[tuple[float, float, float, floa
     except Exception:
         return segmentos
     for d in dibujos:
+        solo_trazo = d.get("fill") is None and "s" in (d.get("type") or "")
         for item in d.get("items", []):
-            if item[0] == "l":
+            if item[0] == "l" and solo_trazo:
+                # Una línea trazada; los bordes de formas rellenas (recuadros de precio) no tachan
                 p1, p2 = item[1], item[2]
                 segmentos.append((p1.x, p1.y, p2.x, p2.y))
             elif item[0] == "re":
                 r = item[1]
-                if r.height <= 2.5 and r.width > 4:
+                if r.height <= 2.5 and r.width > 4 and len(d.get("items", [])) == 1:
                     segmentos.append((r.x0, r.y0 + r.height / 2, r.x1, r.y0 + r.height / 2))
     return segmentos
 
