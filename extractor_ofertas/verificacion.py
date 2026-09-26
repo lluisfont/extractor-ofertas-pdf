@@ -10,6 +10,7 @@ El modelo del chat interpreta la página (qué texto va con qué oferta). Este m
 from __future__ import annotations
 
 import json
+import re
 import statistics
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,7 +24,11 @@ from . import lectura
 from .config import Config
 from .lineas import construir_lineas
 from .modelos import Linea, Precio
-from .precios import clasificar_por_tamano, detectar_precios, marcar_tachados, mismo_precio
+from .precios import clasificar_por_tamano, detectar_precios, marcar_tachados, mismo_precio, solapa_con_alguno
+
+# Textos legales o de condiciones cuyos importes no son ofertas
+_LEGAL = re.compile(r"importe|m[aá]ximo|m[ií]nimo de compra|financ|cuota|\bt\.?a\.?e\b|\bt\.?i\.?n\b|comisi[oó]n|intereses|"
+                    r"bases|sorteo|premio|concurso|legislaci|reembols|plazo|gastos|coste total|adeudado", re.IGNORECASE)
 
 CAMPOS_IMPORTE = ["precio_oferta", "precio_normal", "precio_total_lote", "precio_segunda_unidad", "cupon_euros",
                   "precio_unitario", "precio_unitario_normal"]
@@ -102,7 +107,7 @@ class Folleto:
         if self.plumber is not None and con_texto:
             for q in detectar_precios(construir_lineas(lectura.palabras_pdfplumber(self.plumber.pages[n - 1])),
                                       n, self.cfg, motor="pdfplumber"):
-                if q.con_euro and not any(mismo_precio(p, q) for p in precios):
+                if q.con_euro and not any(mismo_precio(p, q) for p in precios) and not solapa_con_alguno(q, precios):
                     precios.append(q)
         # Texto con contorno o sombra: el mismo precio dos veces en el mismo sitio
         unicos: list[Precio] = []
@@ -115,7 +120,7 @@ class Folleto:
 
         mediana = statistics.median([w.tamano for w in palabras]) if palabras else 10
         relevantes = {i for i, p in enumerate(unicos)
-                      if p.tipo != "condicion" and not (p.linea and len(p.linea.texto) > 60 and p.tamano <= mediana)}
+                      if p.tipo != "condicion" and not (p.linea and p.tamano <= mediana and _LEGAL.search(p.linea.texto))}
         a = AnalisisPagina(numero=n, lineas=lineas, precios=unicos, relevantes=relevantes, con_texto=con_texto,
                            cobertura_imagen=lectura.cobertura_imagenes(pag),
                            texto_bruto=lectura.normalizar(pag.get_text()))
@@ -156,6 +161,8 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
     por_valor: dict[float, list[int]] = {}
     for i, p in enumerate(a.precios):
         por_valor.setdefault(round(p.valor, 2), []).append(i)
+    ids_descartados = {d.id.strip().upper() for d in descartes}
+    descartados = {i for i in range(len(a.precios)) if a.id_precio(i) in ids_descartados}
     usados: set[int] = set()
     no_encontrados, anclas, cubiertos_por = [], [], {}
     for k, o in enumerate(ofertas):
@@ -167,7 +174,9 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
             v = round(float(v), 2)
             candidatos = por_valor.get(v, [])
             libres = [i for i in candidatos if i not in usados]
-            elegido = (libres or candidatos or [None])[0]
+            # primero los precios no descartados, luego cualquiera con ese importe
+            preferidos = [i for i in libres if i not in descartados]
+            elegido = (preferidos or libres or candidatos or [None])[0]
             if elegido is None:
                 if a.con_texto:
                     no_encontrados.append({"oferta": k + 1, "producto": o.producto, "campo": campo, "valor": v})
@@ -178,7 +187,6 @@ def verificar(a: AnalisisPagina, ofertas: list[OfertaEntrada], descartes: list[P
                 ancla = elegido
         anclas.append(ancla)
 
-    ids_descartados = {d.id.strip().upper() for d in descartes}
     sin_cubrir = [i for i in sorted(a.relevantes)
                   if i not in usados and a.id_precio(i) not in ids_descartados]
     sin_descripcion = [k + 1 for k, o in enumerate(ofertas) if not (o.producto or "").strip()]
@@ -219,16 +227,20 @@ def informe_texto(n: int, v: dict, total_ofertas: int) -> str:
 # --- Sesión persistente ------------------------------------------------------------------
 
 class Sesion:
+    """Un archivo JSON por página: varios procesos pueden guardar páginas a la vez sin pisarse."""
+
     def __init__(self, ruta_pdf: Path, cfg: Config, paginas: int):
         self.ruta_pdf = ruta_pdf
-        carpeta = cfg.carpeta_salida / ".sesiones"
-        carpeta.mkdir(parents=True, exist_ok=True)
-        self.ruta = carpeta / f"{ruta_pdf.stem}.json"
-        if self.ruta.exists():
-            self.datos = json.loads(self.ruta.read_text(encoding="utf-8"))
-        else:
-            self.datos = {"archivo": ruta_pdf.name, "paginas_total": paginas,
-                          "creada": datetime.now().isoformat(timespec="seconds"), "paginas": {}}
+        self.carpeta = cfg.carpeta_salida / ".sesiones" / ruta_pdf.stem
+        self.carpeta.mkdir(parents=True, exist_ok=True)
+        self.paginas_total = paginas
+
+    @property
+    def datos(self) -> dict:
+        paginas = {}
+        for f in self.carpeta.glob("pagina_*.json"):
+            paginas[str(int(f.stem.split("_")[1]))] = json.loads(f.read_text(encoding="utf-8"))
+        return {"archivo": self.ruta_pdf.name, "paginas_total": self.paginas_total, "paginas": paginas}
 
     def guardar_pagina(self, n: int, ofertas: list[OfertaEntrada], descartes: list[PrecioDescartado],
                        vigencia: str | None, verificacion: dict, a: AnalisisPagina) -> None:
@@ -240,7 +252,7 @@ class Sesion:
                 p = a.precios[i]
                 anclas.append({"id": a.id_precio(i), "x": round(p.x0, 1), "y": round(p.y0, 1),
                                "linea": p.linea.texto if p.linea else ""})
-        self.datos["paginas"][str(n)] = {
+        datos = {
             "ofertas": [o.model_dump() for o in ofertas],
             "descartes": [d.model_dump() for d in descartes],
             "vigencia": vigencia,
@@ -248,10 +260,14 @@ class Sesion:
             "anclas": anclas,
             "guardada": datetime.now().isoformat(timespec="seconds"),
         }
-        self.ruta.write_text(json.dumps(self.datos, ensure_ascii=False, indent=1), encoding="utf-8")
+        destino = self.carpeta / f"pagina_{n:03d}.json"
+        tmp = destino.with_suffix(".tmp")
+        tmp.write_text(json.dumps(datos, ensure_ascii=False, indent=1), encoding="utf-8")
+        tmp.replace(destino)  # escritura atómica
 
     def pendientes(self) -> list[int]:
-        return [n for n in range(1, self.datos["paginas_total"] + 1) if str(n) not in self.datos["paginas"]]
+        hechas = {int(f.stem.split("_")[1]) for f in self.carpeta.glob("pagina_*.json")}
+        return [n for n in range(1, self.paginas_total + 1) if n not in hechas]
 
     def con_avisos(self) -> list[int]:
         return sorted(int(n) for n, p in self.datos["paginas"].items()
@@ -261,7 +277,6 @@ class Sesion:
 # --- Resultado para el Excel -------------------------------------------------------------
 
 def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
-    import re
     from collections import Counter
 
     from .modelos import Caja, Incidencia, Oferta
@@ -273,9 +288,10 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
     inc = res.incidencias
     siguiente = 1
     vigencias = []
+    paginas_sesion = sesion.datos["paginas"]
     for n in range(1, folleto.paginas + 1):
         a = folleto.analizar(n)
-        datos = sesion.datos["paginas"].get(str(n))
+        datos = paginas_sesion.get(str(n))
         bruto = len(PATRON_EURO_BRUTO.findall(a.texto_bruto))
         if datos is None:
             inc.append(Incidencia(n, "ERROR", "Página sin procesar", "El modelo no ha procesado esta página."))
@@ -313,7 +329,10 @@ def resultado_desde_sesion(sesion: Sesion, folleto: Folleto):
                             confianza="alta" if a.con_texto and not alertas else "media")
             descuento = o.get("descuento_pct")
             if descuento is None and o["precio_oferta"] and o["precio_normal"] and o["precio_normal"] > o["precio_oferta"]:
-                descuento = round((1 - o["precio_oferta"] / o["precio_normal"]) * 100, 1)
+                if o["precio_normal"] <= 3 * o["precio_oferta"]:
+                    descuento = round((1 - o["precio_oferta"] / o["precio_normal"]) * 100, 1)
+                else:  # p. ej. precio por lata frente al pack tachado entero
+                    alertas.append("Precio normal de otro formato (pack): descuento no calculado")
             of = Oferta(id=siguiente, pagina=n, precio=precio, seccion=o.get("seccion") or "", alertas=alertas)
             of.campos = {
                 "producto": o["producto"], "marca": o.get("marca"), "formato": o.get("formato"),

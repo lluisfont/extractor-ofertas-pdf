@@ -36,8 +36,10 @@ def construir_lineas(palabras: list[Palabra]) -> list[Linea]:
             menor, mayor = min(p.tamano, ref.tamano), max(p.tamano, ref.tamano)
             if mayor > 1.8 * menor:
                 # Tamaños muy distintos: solo se unen las piezas de un precio (1 | 99 | €)
-                pequeno = p if p.tamano < ref.tamano else ref
-                if not (_CENTIMOS.match(pequeno.texto) or pequeno.texto in ("€", "€.")) or hueco > 0.25 * menor:
+                pequeno, grande = (p, ref) if p.tamano < ref.tamano else (ref, p)
+                pieza = _CENTIMOS.match(pequeno.texto) or pequeno.texto in ("€", "€.", ",", ".", "'", "’")
+                dentro = pequeno.y0 >= grande.y0 - 0.1 * grande.alto and pequeno.y1 <= grande.y1 + 0.1 * grande.alto
+                if not (pieza and dentro) or hueco > 0.25 * menor:
                     continue
             if hueco < -0.3 * mayor or hueco > 0.9 * menor:
                 continue
@@ -76,7 +78,8 @@ def _componer(palabras: list[Palabra]) -> Linea:
             hueco = p.x0 - ant.x1
             pegado = hueco < 0.15 * min(p.tamano, ant.tamano)
             es_centimo = (_ENTERO.match(ant.texto) and _CENTIMOS.match(p.texto)
-                          and p.tamano < 0.85 * ant.tamano)
+                          and p.tamano < 0.85 * ant.tamano
+                          and p.y0 >= ant.y0 - 0.1 * ant.alto)  # en superíndice, no un precio encima
             if es_centimo and not re.search(r"[,.'’]$", ant.texto) and not re.match(r"^[,.'’]", p.texto):
                 texto += ","
             elif not pegado:

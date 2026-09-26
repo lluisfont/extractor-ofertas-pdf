@@ -18,7 +18,7 @@ from .interpretacion import interpretar
 from .lineas import construir_lineas
 from .modelos import Incidencia, Linea, Oferta, Precio
 from .precios import (PATRON_EURO_BRUTO, clasificar_por_tamano, detectar_precios, marcar_tachados,
-                      mismo_precio)
+                      mismo_precio, solapa_con_alguno)
 
 log = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ def _procesar_pagina(pag, pag_plumber, n: int, cfg: Config, res: Resultado, sigu
     if metodo == "texto" and palabras_pl:
         lineas_pl = construir_lineas(palabras_pl)
         for q in detectar_precios(lineas_pl, n, cfg, motor="pdfplumber"):
-            if q.con_euro and not any(mismo_precio(p, q) for p in precios):
+            if q.con_euro and not any(mismo_precio(p, q) for p in precios) and not solapa_con_alguno(q, precios):
                 precios.append(q)
                 lineas.append(q.linea)
                 recuperados += 1

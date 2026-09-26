@@ -159,3 +159,13 @@ def clasificar_por_tamano(precios: list[Precio], cfg) -> None:
 def mismo_precio(a: Precio, b: Precio, tolerancia: float = 6.0) -> bool:
     return (abs(a.valor - b.valor) < 0.005 and abs(a.caja.cx - b.caja.cx) < tolerancia + a.caja.ancho / 2
             and abs(a.caja.cy - b.caja.cy) < tolerancia + a.caja.alto / 2)
+
+
+def solapa_con_alguno(q: Precio, precios: list[Precio]) -> bool:
+    """True si la caja de q se solapa con la de algún precio ya detectado (lectura distinta del mismo sitio)."""
+    for p in precios:
+        ix = min(p.x1, q.x1) - max(p.x0, q.x0)
+        iy = min(p.y1, q.y1) - max(p.y0, q.y0)
+        if ix > 0 and iy > 0 and ix * iy > 0.2 * min(p.caja.ancho * p.caja.alto, q.caja.ancho * q.caja.alto):
+            return True
+    return False
