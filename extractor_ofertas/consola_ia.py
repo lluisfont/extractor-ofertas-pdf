@@ -1,9 +1,11 @@
 """Las mismas herramientas del servidor MCP, por línea de comandos (para agentes como Claude Code).
 
-    python -m extractor_ofertas.consola_ia leer    <pdf> <pagina> <salida.png>
-    python -m extractor_ofertas.consola_ia guardar <pdf> <pagina> <ofertas.json>
-    python -m extractor_ofertas.consola_ia estado  <pdf>
-    python -m extractor_ofertas.consola_ia excel   <pdf>
+    python -m extractor_ofertas.consola_ia criterios                           # criterios de extracción
+    python -m extractor_ofertas.consola_ia controlar <pdf>                     # calibrar el detector (cadena nueva)
+    python -m extractor_ofertas.consola_ia leer      <pdf> <pagina> <salida.png>
+    python -m extractor_ofertas.consola_ia guardar   <pdf> <pagina> <ofertas.json>
+    python -m extractor_ofertas.consola_ia estado    <pdf>
+    python -m extractor_ofertas.consola_ia excel     <pdf>
 
 ofertas.json: {"ofertas": [...], "precios_no_oferta": [{"id": "P3", "motivo": "..."}], "vigencia_pagina": null}
 con los campos de OfertaEntrada (ver verificacion.py).
@@ -15,6 +17,7 @@ import sys
 from pathlib import Path
 
 from .config import Config
+from .criterios import CRITERIOS
 from .exportar import exportar
 from .verificacion import (Folleto, OfertaEntrada, PrecioDescartado, Sesion, informe_texto,
                            resultado_desde_sesion, texto_para_modelo, verificar)
@@ -23,11 +26,21 @@ from .verificacion import (Folleto, OfertaEntrada, PrecioDescartado, Sesion, inf
 def main(argv: list[str]) -> int:
     for flujo in (sys.stdout, sys.stderr):
         flujo.reconfigure(encoding="utf-8")
-    orden, pdf = argv[0], Path(argv[1])
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    orden = argv[0]
+    if orden == "criterios":
+        print(CRITERIOS)
+        return 0
+    pdf = Path(argv[1])
     cfg = Config.cargar()
     f = Folleto(pdf, cfg)
     s = Sesion(pdf, cfg, f.paginas)
-    if orden == "leer":
+    if orden == "controlar":
+        from .controles import informe
+        print(informe(f))
+    elif orden == "leer":
         n, png = int(argv[2]), Path(argv[3])
         png.parent.mkdir(parents=True, exist_ok=True)
         png.write_bytes(f.imagen_png(n))
@@ -46,6 +59,9 @@ def main(argv: list[str]) -> int:
     elif orden == "excel":
         destino = exportar(resultado_desde_sesion(s, f), cfg.carpeta_salida)
         print(destino)
+    else:
+        print(f"Orden desconocida: {orden}\n{__doc__}")
+        return 1
     f.cerrar()
     return 0
 

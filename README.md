@@ -65,16 +65,37 @@ Un folleto de 78 páginas consume mucho contexto: si el chat se corta, abre otro
 Las mismas herramientas están disponibles por línea de comandos, para que un agente las use desde la terminal:
 
 ```bash
-python -m extractor_ofertas.consola_ia leer    entrada/folleto.pdf 13 p13.png   # imagen + capa de texto + precios P1..Pn
-python -m extractor_ofertas.consola_ia guardar entrada/folleto.pdf 13 p13.json  # verifica y guarda la página
-python -m extractor_ofertas.consola_ia estado  entrada/folleto.pdf
-python -m extractor_ofertas.consola_ia excel   entrada/folleto.pdf
+python -m extractor_ofertas.consola_ia criterios                                  # criterios de extracción
+python -m extractor_ofertas.consola_ia controlar entrada/folleto.pdf              # calibrar el detector
+python -m extractor_ofertas.consola_ia leer      entrada/folleto.pdf 13 p13.png   # imagen + texto + precios P1..Pn
+python -m extractor_ofertas.consola_ia guardar   entrada/folleto.pdf 13 p13.json  # verifica y guarda la página
+python -m extractor_ofertas.consola_ia estado    entrada/folleto.pdf
+python -m extractor_ofertas.consola_ia excel     entrada/folleto.pdf
 ```
 
-En Claude Code basta con pedir **«procesa el folleto de entrada»**: reparte las páginas entre varios
-subagentes que trabajan a la vez. Cada página se guarda en su propio archivo, así que las escrituras
-en paralelo no se pisan. Un folleto de 78 páginas tardó unos 5 minutos con 6 agentes
-(768 ofertas, las 78 páginas verificadas).
+En Claude Code basta con pedir **«procesa el folleto de entrada»**: el procedimiento completo está en
+[CLAUDE.md](CLAUDE.md). Reparte las páginas entre varios subagentes que trabajan a la vez; cada página
+se guarda en su propio archivo, así que las escrituras en paralelo no se pisan. Un folleto de 78
+páginas tardó unos 5 minutos con 6 agentes.
+
+## Criterios de extracción
+
+Están en [criterios.py](extractor_ofertas/criterios.py), la única fuente que usan el servidor MCP
+(Claude Desktop / ChatGPT Desktop), la consola y los agentes: qué es una oferta, cómo repartir cada
+importe entre las columnas («1 unidad X€» → precio normal, «2 unidades por 3€» → lote, precio Club →
+cupón, rangos de peso variable…), cómo tratar las lecturas del OCR y qué hacer con cada aviso.
+
+## Cadenas probadas
+
+| Folleto | Páginas | Ofertas | Tipo de PDF | Resultado |
+|---|---|---|---|---|
+| Carrefour (1-12 oct 2026) | 78 | 768 | Con capa de texto | 78 páginas verificadas |
+| Eroski Galicia (17-30 sep 2026) | 39 | 359 | Con capa de texto | 39 páginas verificadas |
+| Gadis Galicia (24-30 sep 2026) | 40 | 359 | Solo imágenes (OCR) | 40 páginas verificadas por OCR + 154 enteros con segunda lectura |
+
+**Cadena nueva:** antes de extraer, `consola_ia controlar` comprueba que el detector ve todos los
+importes del texto del PDF y no inventa ninguno. Cada cadena maqueta los precios a su manera (céntimos
+arriba o abajo, «€/ud» apilado, precio anterior pegado al nuevo…) y conviene calibrar con ella.
 
 `p13.json` tiene la forma `{"ofertas": [...], "precios_no_oferta": [{"id": "P7", "motivo": "..."}], "vigencia_pagina": null}`,
 con los campos de `OfertaEntrada` en [verificacion.py](extractor_ofertas/verificacion.py).

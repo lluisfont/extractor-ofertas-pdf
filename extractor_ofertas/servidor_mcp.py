@@ -22,30 +22,7 @@ from .verificacion import (Folleto, OfertaEntrada, PrecioDescartado, Sesion, inf
 
 log = logging.getLogger(__name__)
 
-INSTRUCCIONES = """Extractor de ofertas de folletos PDF de supermercado a Excel.
-
-Flujo de trabajo:
-1. listar_folletos -> ver los PDF de la carpeta 'entrada' y su progreso.
-2. Para cada página pendiente: leer_pagina -> identifica TODAS las ofertas mirando la imagen y
-   usando los importes exactos de la capa de texto -> guardar_pagina.
-3. Si guardar_pagina devuelve avisos (precios sin cubrir o importes que no están en el PDF),
-   corrige y vuelve a llamar a guardar_pagina con la lista completa de la página.
-4. Cuando no queden páginas pendientes: generar_excel.
-
-Criterios de extracción:
-- Una oferta por producto o grupo de productos con su propio precio o sello de promoción.
-  Incluye las ofertas sin precio (solo un sello 3x2, -50 %...) con precio_oferta = null, y las
-  de categoría completa ("En TODOS los aceites -20 %": producto = la categoría).
-- «1 unidad 4,89€» es precio_normal; «3 unidades 9,78€» es precio_total_lote (unidades_lote=3);
-  «El kg sale a» es precio por kg; un importe tachado es el precio normal/anterior.
-  Si hay dos precios por kg, el del recuadro de la promoción es precio_unitario y el otro
-  precio_unitario_normal.
-- En los precios grandes los céntimos pueden venir separados en el texto («3 ,26 €» = 3,26).
-- No son ofertas: bases legales, límites de cupón («Importe máximo…»), financiación,
-  portadas y cabeceras. Esos importes van en precios_no_oferta con su motivo.
-- No inventes datos: si un campo no aparece, déjalo vacío.
-- Los folletos son largos: si la conversación se alarga, el progreso queda guardado y se
-  puede continuar en un chat nuevo (listar_folletos indica las páginas pendientes)."""
+from .criterios import INSTRUCCIONES  # noqa: E402  (única fuente de criterios)
 
 mcp = MCPServer("extractor-ofertas", instructions=INSTRUCCIONES, version="0.2.0")
 _cfg = Config.cargar()
@@ -164,7 +141,7 @@ def procesar_folleto(archivo: str = "") -> str:
     objetivo = f"el folleto «{archivo}»" if archivo else "el folleto que haya en la carpeta de entrada"
     return (f"Procesa {objetivo} con las herramientas de extractor-ofertas: empieza con listar_folletos, "
             "recorre todas las páginas pendientes (leer_pagina -> guardar_pagina, corrigiendo hasta que "
-            "cada página quede VERIFICADA o con los descartes justificados) y termina con generar_excel. "
+            "cada página quede VERIFICADA o VERIFICADA (OCR)) y termina con generar_excel. "
             "No me pidas confirmación entre páginas.")
 
 
